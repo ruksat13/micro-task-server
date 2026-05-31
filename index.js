@@ -322,8 +322,20 @@ async function run() {
             res.send({ totalWorkers, totalBuyers, totalCoins, totalPayments });
         });
         // Temporary admin setup route - remove after use
+        // Temporary admin setup route - remove after use
         app.get("/make-admin/:email", async (req, res) => {
             const email = req.params.email;
+            const existing = await usersCollection.findOne({ email });
+            if (!existing) {
+                await usersCollection.insertOne({
+                    name: "Admin User",
+                    email: email,
+                    photo: "https://i.pravatar.cc/100?img=8",
+                    role: "admin",
+                    coins: 100,
+                });
+                return res.send({ message: "Admin user created!" });
+            }
             const result = await usersCollection.updateOne(
                 { email },
                 { $set: { role: "admin" } }
