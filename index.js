@@ -7,11 +7,9 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Middleware
 app.use(cors({ origin: ["http://127.0.0.1:5173", "http://localhost:5173"], credentials: true }));
 app.use(express.json());
 
-// MongoDB
 const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri, {
     serverApi: {
@@ -41,7 +39,7 @@ async function run() {
             res.send({ token });
         });
 
-        // Verify Token Middleware
+        // Verify Token
         const verifyToken = (req, res, next) => {
             const token = req.headers.authorization?.split(" ")[1];
             if (!token) return res.status(401).send({ message: "Unauthorized" });
@@ -68,7 +66,7 @@ async function run() {
             next();
         };
 
-        // Users Routes
+        // ==================== USERS ====================
         app.post("/users", async (req, res) => {
             const user = req.body;
             const existing = await usersCollection.findOne({ email: user.email });
@@ -101,7 +99,6 @@ async function run() {
             res.send(result);
         });
 
-        // Top Workers
         app.get("/top-workers", async (req, res) => {
             const result = await usersCollection
                 .find({ role: "worker" })
@@ -110,7 +107,8 @@ async function run() {
                 .toArray();
             res.send(result);
         });
-        // Tasks Routes
+
+        // ==================== TASKS ====================
         app.post("/tasks", verifyToken, verifyBuyer, async (req, res) => {
             const task = req.body;
             const result = await tasksCollection.insertOne(task);
@@ -121,6 +119,7 @@ async function run() {
             const result = await tasksCollection.find({ required_workers: { $gt: 0 } }).toArray();
             res.send(result);
         });
+
         app.get("/tasks/all", verifyToken, verifyAdmin, async (req, res) => {
             const result = await tasksCollection.find().toArray();
             res.send(result);
@@ -128,7 +127,10 @@ async function run() {
 
         app.get("/tasks/buyer/:email", verifyToken, verifyBuyer, async (req, res) => {
             const email = req.params.email;
-            const result = await tasksCollection.find({ buyer_email: email }).sort({ completion_date: -1 }).toArray();
+            const result = await tasksCollection
+                .find({ buyer_email: email })
+                .sort({ completion_date: -1 })
+                .toArray();
             res.send(result);
         });
 
@@ -151,10 +153,18 @@ async function run() {
             res.send(result);
         });
 
-        // Submissions Routes
+        // ==================== SUBMISSIONS ====================
         app.post("/submissions", verifyToken, async (req, res) => {
             const submission = req.body;
             const result = await submissionsCollection.insertOne(submission);
+            // Notify buyer
+            await notificationsCollection.insertOne({
+                message: `${submission.worker_name} submitted work for your task "${submission.task_title}"`,
+                toEmail: submission.buyer_email,
+                actionRoute: "/dashboard/task-to-review",
+                time: new Date(),
+                read: false,
+            });
             res.send(result);
         });
 
@@ -164,34 +174,69 @@ async function run() {
             const limit = parseInt(req.query.limit) || 10;
             const skip = (page - 1) * limit;
             const total = await submissionsCollection.countDocuments({ worker_email: email });
-            const result = await submissionsCollection.find({ worker_email: email }).skip(skip).limit(limit).toArray();
+            const result = await submissionsCollection
+                .find({ worker_email: email })
+                .skip(skip)
+                .limit(limit)
+                .toArray();
             res.send({ submissions: result, total, page, totalPages: Math.ceil(total / limit) });
         });
 
         app.get("/submissions/buyer/:email", verifyToken, verifyBuyer, async (req, res) => {
             const email = req.params.email;
-            const result = await submissionsCollection.find({ buyer_email: email, status: "pending" }).toArray();
+            const result = await submissionsCollection
+                .find({ buyer_email: email, status: "pending" })
+                .toArray();
             res.send(result);
         });
 
         app.patch("/submissions/:id", verifyToken, async (req, res) => {
             const id = req.params.id;
-            const { status, payable_amount, worker_email, task_id } = req.body;
-            const result = await submissionsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status } });
+            const { status, payable_amount, worker_email, task_id, worker_name, task_title, buyer_name, buyer_email } = req.body;
+            const result = await submissionsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: { status } }
+            );
+
             if (status === "approved") {
-                await usersCollection.updateOne({ email: worker_email }, { $inc: { coins: payable_amount } });
+                await usersCollection.updateOne(
+                    { email: worker_email },
+                    { $inc: { coins: payable_amount } }
+                );
+                await notificationsCollection.insertOne({
+                    message: `You have earned 🪙${payable_amount} from ${buyer_name} for completing "${task_title}"`,
+                    toEmail: worker_email,
+                    actionRoute: "/dashboard/worker-home",
+                    time: new Date(),
+                    read: false,
+                });
             }
+
             if (status === "rejected") {
-                await tasksCollection.updateOne({ _id: new ObjectId(task_id) }, { $inc: { required_workers: 1 } });
+                await tasksCollection.updateOne(
+                    { _id: new ObjectId(task_id) },
+                    { $inc: { required_workers: 1 } }
+                );
+                await notificationsCollection.insertOne({
+                    message: `Your submission for "${task_title}" was rejected`,
+                    toEmail: worker_email,
+                    actionRoute: "/dashboard/my-submissions",
+                    time: new Date(),
+                    read: false,
+                });
             }
+
             res.send(result);
         });
 
-        // Withdrawals Routes
+        // ==================== WITHDRAWALS ====================
         app.post("/withdrawals", verifyToken, async (req, res) => {
             const withdrawal = req.body;
             const result = await withdrawalsCollection.insertOne(withdrawal);
-            await usersCollection.updateOne({ email: withdrawal.worker_email }, { $inc: { coins: -withdrawal.withdrawal_coin } });
+            await usersCollection.updateOne(
+                { email: withdrawal.worker_email },
+                { $inc: { coins: -withdrawal.withdrawal_coin } }
+            );
             res.send(result);
         });
 
@@ -202,10 +247,24 @@ async function run() {
 
         app.patch("/withdrawals/:id", verifyToken, verifyAdmin, async (req, res) => {
             const id = req.params.id;
-            const result = await withdrawalsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status: "approved" } });
+            const withdrawal = await withdrawalsCollection.findOne({ _id: new ObjectId(id) });
+            const result = await withdrawalsCollection.updateOne(
+                { _id: new ObjectId(id) },
+                { $set: { status: "approved" } }
+            );
+            if (withdrawal) {
+                await notificationsCollection.insertOne({
+                    message: `Your withdrawal of $${withdrawal.withdrawal_amount} has been approved!`,
+                    toEmail: withdrawal.worker_email,
+                    actionRoute: "/dashboard/withdrawals",
+                    time: new Date(),
+                    read: false,
+                });
+            }
             res.send(result);
         });
-        // Payments Routes
+
+        // ==================== PAYMENTS ====================
         app.post("/payments", verifyToken, async (req, res) => {
             const payment = req.body;
             const result = await paymentsCollection.insertOne(payment);
@@ -214,11 +273,39 @@ async function run() {
 
         app.get("/payments/:email", verifyToken, async (req, res) => {
             const email = req.params.email;
-            const result = await paymentsCollection.find({ buyer_email: email }).sort({ date: -1 }).toArray();
+            const result = await paymentsCollection
+                .find({ buyer_email: email })
+                .sort({ date: -1 })
+                .toArray();
             res.send(result);
         });
 
-        // Admin Stats
+        // ==================== NOTIFICATIONS ====================
+        app.post("/notifications", verifyToken, async (req, res) => {
+            const notification = req.body;
+            const result = await notificationsCollection.insertOne(notification);
+            res.send(result);
+        });
+
+        app.get("/notifications/:email", verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const result = await notificationsCollection
+                .find({ toEmail: email })
+                .sort({ time: -1 })
+                .toArray();
+            res.send(result);
+        });
+
+        app.patch("/notifications/read/:email", verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const result = await notificationsCollection.updateMany(
+                { toEmail: email, read: { $ne: true } },
+                { $set: { read: true } }
+            );
+            res.send(result);
+        });
+
+        // ==================== ADMIN STATS ====================
         app.get("/admin-stats", verifyToken, verifyAdmin, async (req, res) => {
             const totalWorkers = await usersCollection.countDocuments({ role: "worker" });
             const totalBuyers = await usersCollection.countDocuments({ role: "buyer" });
