@@ -321,6 +321,15 @@ async function run() {
             const totalPayments = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
             res.send({ totalWorkers, totalBuyers, totalCoins, totalPayments });
         });
+        // Temporary admin setup route - remove after use
+        app.get("/make-admin/:email", async (req, res) => {
+            const email = req.params.email;
+            const result = await usersCollection.updateOne(
+                { email },
+                { $set: { role: "admin" } }
+            );
+            res.send(result);
+        });
 
         app.get("/", (req, res) => {
             res.send("MicroTask Server Running!");
