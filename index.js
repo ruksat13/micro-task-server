@@ -121,6 +121,10 @@ async function run() {
             const result = await tasksCollection.find({ required_workers: { $gt: 0 } }).toArray();
             res.send(result);
         });
+        app.get("/tasks/all", verifyToken, verifyAdmin, async (req, res) => {
+            const result = await tasksCollection.find().toArray();
+            res.send(result);
+        });
 
         app.get("/tasks/buyer/:email", verifyToken, verifyBuyer, async (req, res) => {
             const email = req.params.email;
