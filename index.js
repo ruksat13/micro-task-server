@@ -110,6 +110,120 @@ async function run() {
                 .toArray();
             res.send(result);
         });
+        // Tasks Routes
+        app.post("/tasks", verifyToken, verifyBuyer, async (req, res) => {
+            const task = req.body;
+            const result = await tasksCollection.insertOne(task);
+            res.send(result);
+        });
+
+        app.get("/tasks", verifyToken, async (req, res) => {
+            const result = await tasksCollection.find({ required_workers: { $gt: 0 } }).toArray();
+            res.send(result);
+        });
+
+        app.get("/tasks/buyer/:email", verifyToken, verifyBuyer, async (req, res) => {
+            const email = req.params.email;
+            const result = await tasksCollection.find({ buyer_email: email }).sort({ completion_date: -1 }).toArray();
+            res.send(result);
+        });
+
+        app.get("/tasks/:id", verifyToken, async (req, res) => {
+            const id = req.params.id;
+            const result = await tasksCollection.findOne({ _id: new ObjectId(id) });
+            res.send(result);
+        });
+
+        app.put("/tasks/:id", verifyToken, verifyBuyer, async (req, res) => {
+            const id = req.params.id;
+            const update = req.body;
+            const result = await tasksCollection.updateOne({ _id: new ObjectId(id) }, { $set: update });
+            res.send(result);
+        });
+
+        app.delete("/tasks/:id", verifyToken, async (req, res) => {
+            const id = req.params.id;
+            const result = await tasksCollection.deleteOne({ _id: new ObjectId(id) });
+            res.send(result);
+        });
+
+        // Submissions Routes
+        app.post("/submissions", verifyToken, async (req, res) => {
+            const submission = req.body;
+            const result = await submissionsCollection.insertOne(submission);
+            res.send(result);
+        });
+
+        app.get("/submissions/worker/:email", verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 10;
+            const skip = (page - 1) * limit;
+            const total = await submissionsCollection.countDocuments({ worker_email: email });
+            const result = await submissionsCollection.find({ worker_email: email }).skip(skip).limit(limit).toArray();
+            res.send({ submissions: result, total, page, totalPages: Math.ceil(total / limit) });
+        });
+
+        app.get("/submissions/buyer/:email", verifyToken, verifyBuyer, async (req, res) => {
+            const email = req.params.email;
+            const result = await submissionsCollection.find({ buyer_email: email, status: "pending" }).toArray();
+            res.send(result);
+        });
+
+        app.patch("/submissions/:id", verifyToken, async (req, res) => {
+            const id = req.params.id;
+            const { status, payable_amount, worker_email, task_id } = req.body;
+            const result = await submissionsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status } });
+            if (status === "approved") {
+                await usersCollection.updateOne({ email: worker_email }, { $inc: { coins: payable_amount } });
+            }
+            if (status === "rejected") {
+                await tasksCollection.updateOne({ _id: new ObjectId(task_id) }, { $inc: { required_workers: 1 } });
+            }
+            res.send(result);
+        });
+
+        // Withdrawals Routes
+        app.post("/withdrawals", verifyToken, async (req, res) => {
+            const withdrawal = req.body;
+            const result = await withdrawalsCollection.insertOne(withdrawal);
+            await usersCollection.updateOne({ email: withdrawal.worker_email }, { $inc: { coins: -withdrawal.withdrawal_coin } });
+            res.send(result);
+        });
+
+        app.get("/withdrawals", verifyToken, verifyAdmin, async (req, res) => {
+            const result = await withdrawalsCollection.find({ status: "pending" }).toArray();
+            res.send(result);
+        });
+
+        app.patch("/withdrawals/:id", verifyToken, verifyAdmin, async (req, res) => {
+            const id = req.params.id;
+            const result = await withdrawalsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status: "approved" } });
+            res.send(result);
+        });
+        // Payments Routes
+        app.post("/payments", verifyToken, async (req, res) => {
+            const payment = req.body;
+            const result = await paymentsCollection.insertOne(payment);
+            res.send(result);
+        });
+
+        app.get("/payments/:email", verifyToken, async (req, res) => {
+            const email = req.params.email;
+            const result = await paymentsCollection.find({ buyer_email: email }).sort({ date: -1 }).toArray();
+            res.send(result);
+        });
+
+        // Admin Stats
+        app.get("/admin-stats", verifyToken, verifyAdmin, async (req, res) => {
+            const totalWorkers = await usersCollection.countDocuments({ role: "worker" });
+            const totalBuyers = await usersCollection.countDocuments({ role: "buyer" });
+            const allUsers = await usersCollection.find().toArray();
+            const totalCoins = allUsers.reduce((sum, u) => sum + (u.coins || 0), 0);
+            const payments = await paymentsCollection.find().toArray();
+            const totalPayments = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+            res.send({ totalWorkers, totalBuyers, totalCoins, totalPayments });
+        });
 
         app.get("/", (req, res) => {
             res.send("MicroTask Server Running!");
